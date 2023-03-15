@@ -1,0 +1,118 @@
+---
+title: "Modeling Assignment 2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(caret)
+library(pROC)
+library(MLmetrics)
+library(h2o)
+library(fastDummies)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r}
+bank = read_rds("~/Documents/DS-Masters/Machine Learning/Datasets/BankChurners.rds") 
+```
+
+## Feature Engineering
+```{r}
+# playing with PCA 
+banks_dummy = bank %>%
+  mutate(Credit_Limit = case_when(
+    Credit_Limit <= 5000 ~ "Low",
+    TRUE ~ "High"
+  )) %>%
+  mutate(Churn = ifelse(Churn == "yes",1,0))%>%
+  mutate(Married = ifelse(Marital_Status == "Married", 1, 0)) %>%
+  select(-Marital_Status, -Income_Category) %>%
+  dummy_cols(remove_selected_columns = T)
+
+
+pr_bank = prcomp(x= select(banks_dummy, -Churn), scale = T, center=T)
+summary(pr_bank)
+
+pr_bank$rotation
+
+screeplot(pr_bank, type = "lines")
+```
+
+```{r}
+# create some cool features. Make sure you add comments so I know what you are trying to accomplish!
+banko <- bank %>% 
+  mutate(age2=Customer_Age^2) %>%
+  select(Customer_Age, age2, Card_Category, Education_Level, Dependent_count, Churn)
+  # Please do use some PCA! Doesn't have to be all 5 features!
+
+
+
+print(ncol(banko)) # Only 5 features allowed for project 2! Not counting the dependent variable.
+
+```
+
+
+## Specification
+
+```{r}
+# specify the model to be used (i.e. KNN, Naive Bayes, decision tree, random forest, bagged trees) and the tuning parameters used
+
+ctrl <- trainControl(method = "cv", number = 3, classProbs=TRUE, summaryFunction = twoClassSummary)
+set.seed(504) 
+
+bank_index <- createDataPartition(banko$Churn, p = 0.80, list = FALSE)
+train <- banko[ bank_index, ]
+test <- banko[-bank_index, ]
+
+# example spec for rf
+fit <- train(Churn ~ .,
+             data = train, 
+             method = "rf",
+             ntree = 20, 
+             tuneLength = 3,
+             metric = "ROC",
+             trControl = ctrl)
+
+fit
+
+confusionMatrix(predict(fit, test),factor(test$Churn))
+```
+
+
+## Best model
+
+```{r}
+# Here are a few lines to inspect your best model. Add some comments about optimal hyperparameters.
+print(fit)
+print(fit$bestTune)
+```
+
+
+## Re-fit and evaluation
+
+```{r}
+# the "method" below should match the one you chose above. 
+
+set.seed(1504) # I will choose a different seed for evaluation
+
+bank_index <- createDataPartition(banko$Churn, p = 0.80, list = FALSE)
+train <- banko[ bank_index, ]
+test <- banko[-bank_index, ]
+
+# example spec for rf
+fit_final <- train(Churn ~ .,
+             data = train, 
+             method = "rf",
+             tuneGrid=fit$bestTune,
+             metric = "ROC",
+             trControl = ctrl) 
+# The last line means we will fit a model using the best tune parameters your CV found above.
+
+myRoc <- roc(test$Churn, predict(fit_final, test, type="prob")[,2])
+
+plot(myRoc)
+auc(myRoc)
+```
