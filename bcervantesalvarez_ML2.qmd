@@ -1,0 +1,229 @@
+---
+title: "bcervantesalvarez_ML2"
+format: html
+editor: visual
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(caret)
+library(pROC)
+library(MLmetrics)
+library(h2o)
+library(fastDummies)
+library(doParallel)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r}
+bank = read_rds("BankChurners.rds") 
+```
+
+## Feature Engineering
+```{r}
+
+# I have not done ANY Feature Engineering...
+# There is potential to add some features and use that for the column selection
+# for the 5 total features.
+
+banks_dummy = bank %>%
+  mutate(Credit_Limit = case_when(
+    Credit_Limit <= 5000 ~ "Low",
+    TRUE ~ "High"
+  )) %>%
+  mutate(Churn = ifelse(Churn == "yes",1,0))%>%
+  mutate(Married = ifelse(Marital_Status == "Married", 1, 0)) %>%
+  select(-Marital_Status, -Income_Category) %>%
+  dummy_cols(remove_selected_columns = T)
+
+
+pr_bank = prcomp(x= select(banks_dummy, -Churn), scale = T, center=T)
+summary(pr_bank)
+
+pr_bank$rotation
+
+screeplot(pr_bank, type = "lines")
+```
+
+```{r}
+# We can only select 5 features
+# I messed around with the Total_cols and noticed they each kept
+# increasing the model performance
+
+banko <- bank %>%
+  select(Total_Relationship_Count, 
+         Total_Revolving_Bal,
+         Total_Trans_Ct, 
+         Total_Trans_Amt,
+         Total_Ct_Chng_Q4_Q1, 
+         Churn)
+
+
+```
+
+
+## Specification
+
+```{r}
+# I used Random Forest - It gives the best model fit
+
+ctrl <- trainControl(method = "cv", number = 3, classProbs=TRUE, summaryFunction = twoClassSummary)
+set.seed(230) 
+
+bank_index <- createDataPartition(banko$Churn, p = 0.80, list = FALSE)
+train <- banko[ bank_index, ]
+test <- banko[-bank_index, ]
+
+# Random Forest with ntree = 150 | tuneLength = 3 
+# (PRIMARY MODEL)
+fit <- train(Churn ~ .,
+             data = train, 
+             method = "rf",
+             ntree = 150, 
+             tuneLength = 3,
+             metric = "ROC",
+             trControl = ctrl)
+
+fit
+```
+
+## Confusion Matrix Before Picking Best Hyperparameter
+
+```{r}
+confusionMatrix(predict(fit, test),factor(test$Churn))
+```
+
+## Other Models
+
+```{r}
+
+# NOTE! I have not messed around with these models in terms of their
+# parameters. On the bottom it looks like treebag is right below random forest,
+# so potentially it could be even better with some adjusting?
+
+
+
+# TreeBag
+treebag_fit <- train(Churn ~ .,
+                     data = train, 
+                     method = "treebag",
+                     metric = "ROC",
+                     trControl = ctrl)
+
+
+
+# Naive-Bayes
+naivebayes_fit <- train(Churn ~ .,
+                        data = train, 
+                        method = "naive_bayes",
+                        metric = "ROC",
+                        trControl = ctrl)
+
+
+# Decision Tree (rpart)
+rpart_fit <- train(Churn ~ .,
+             data = train, 
+             method = "rpart",
+             metric = "ROC",
+             trControl = ctrl)
+```
+
+## Model Comparison
+
+```{r}
+# I have not ran the random forest model in "base" form or without setting the
+# ntree + tunelength. Maybe one of the other models is better by default?
+
+
+# Test Performance of ALL MODELS
+
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+system.time({
+  fit <- train(Churn ~.,
+               data = train, 
+               method = "rf",
+               ntree = 150,
+               tuneLength = 3,
+               trControl = ctrl);
+  treebag_fit <- train(Churn~., 
+                       data = train, 
+                       method = "treebag", 
+                       trControl = ctrl);
+  naivebayes_fit <- train(Churn~., 
+               data = train, 
+               method="naive_bayes", 
+               trControl=ctrl);
+  rpart_fit <- train(Churn~., 
+                          data = train, 
+                          method="rpart", 
+                          trControl=ctrl);
+})
+
+stopCluster(cl) 
+results <- resamples(list(RandomForest = fit,
+                          BaggedTree = treebag_fit,
+                          NaiveBayes = naivebayes_fit,
+                          DecisionTree = rpart_fit))
+
+# Model Differences
+summary(results)
+```
+
+
+## Best model
+
+```{r}
+# Here are a few lines to inspect your best model. Add some comments about optimal hyperparameters.
+print(fit)
+print(fit$bestTune)
+```
+
+
+## Re-fit and evaluation
+
+```{r}
+# the "method" below should match the one you chose above. 
+
+set.seed(6789) # I will choose a different seed for evaluation
+
+bank_index <- createDataPartition(banko$Churn, p = 0.80, list = FALSE)
+train <- banko[ bank_index, ]
+test <- banko[-bank_index, ]
+
+# example spec for rf
+fit_final <- train(Churn ~ .,
+             data = train, 
+             method = "rf",
+             tuneGrid=fit$bestTune,
+             metric = "ROC",
+             trControl = ctrl) 
+# The last line means we will fit a model using the best tune parameters your CV found above.
+
+myRoc <- roc(test$Churn, predict(fit_final, test, type="prob")[,2])
+
+plot(myRoc)
+auc(myRoc)
+
+
+#Naive-bayes with an AOC Curve: 0.79
+#Rpart with an AOC Curve: 0.7276
+#rf with an AOC Curve: 0.7864
+#Treebag with an AOC Curve: 0.7004
+```
+```{r}
+
+#Current best kappa: Kappa : 0.8175
+
+banko <- bank %>%
+  select(Customer_Age, 
+         Total_Revolving_Bal,
+         Total_Trans_Ct, 
+         Total_Trans_Amt,
+         Total_Ct_Chng_Q4_Q1, 
+         Churn)
+
+```
